@@ -28,9 +28,15 @@ prompt_text = prompt_builder.get_prompt()
 ref_captions = {}
 generated_captions = {}
 
-for idx, example in enumerate(dataset.select()):
+for idx, example in enumerate(dataset):
+    print(idx)
+
     image_id = idx
     image = example["image"]
+
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
     caption = example["answer"]
     ref_captions[image_id] = caption
     generated_text = vlm.generate(
