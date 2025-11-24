@@ -154,6 +154,5 @@ results/
 # Test scripts
 test*.py
 *.sh
-
 bleu_scores_output*.txt
 caption_comparison_table.png

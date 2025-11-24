@@ -9,7 +9,6 @@ if torch.cuda.is_available():
     print("Using GPU")
 else:
     device = torch.device('cpu')
-# In case your GPU does not support bf16
 dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
 # Load a pretrained VLM (either local path, or ID to auto-download from the HF Hub)
@@ -51,62 +50,87 @@ for idx, example in enumerate(dataset):
 
 # from matplotlib import pyplot as plt
 
-# example = dataset[0]
-# image = example["image"]
-#
-# # Display the image
-# plt.imshow(image)
-# plt.axis("off")
-# plt.show()
-#
-# print("Ground truth captions:")
-# print(ref_captions[0])
-#
-# print("Predicted captions:")
-# print(generated_captions[0])
-#
-# N = 1000
-# ref_captions = {}
-# generated_captions = {}
+import io
+from contextlib import redirect_stdout
 
-# for idx, example in enumerate(dataset.select(range(N))):
-#     image_id = idx
-#     image = example["image"]
-#     caption = example["answer"]
-#     ref_captions[image_id] = caption
-#     generated_captions[idx] = [caption[1]]
-#
-# print(ref_captions[999])
-# print('\n')
-# print(generated_captions[999])
-
+from bert_score import score
 from pycocoevalcap.bleu.bleu import Bleu
 
-bleu_scorer = Bleu(4)  # Calculate BLEU scores up to 4-grams
 
-bleu_scores, example_scores = bleu_scorer.compute_score(ref_captions, generated_captions)
+def compute_bleu_scores(ref_captions, generated_captions):
+    bleu_scorer = Bleu(4)
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        bleu_scores, _ = bleu_scorer.compute_score(ref_captions, generated_captions)
+    verbose_output = buffer.getvalue().strip()
+    if verbose_output:
+        print(verbose_output)
+    return (
+        {
+            "BLEU-1": bleu_scores[0],
+            "BLEU-2": bleu_scores[1],
+            "BLEU-3": bleu_scores[2],
+            "BLEU-4": bleu_scores[3],
+        },
+        verbose_output,
+    )
 
-num_captions = len(generated_captions)
 
-with open("bleu_scores_output.txt", "w") as f:
-    f.write(f"Number of generated captions: {num_captions}\n\n")
-    f.write("BLEU Scores (BLEU-1 to BLEU-4):\n")
-    f.write(str(bleu_scores) + "\n\n")  # Write the tuple of scores
+def compute_bertscore_metrics(ref_captions, generated_captions, bert_model="bert-base-uncased", lang="en"):
+    sorted_ids = sorted(generated_captions.keys())
+    preds = [generated_captions[idx][0] for idx in sorted_ids]
+    refs = [ref_captions[idx] for idx in sorted_ids]
 
-    f.write(f"BLEU-1: {bleu_scores[0]:.4f}\n")
-    f.write(f"BLEU-2: {bleu_scores[1]:.4f}\n")
-    f.write(f"BLEU-3: {bleu_scores[2]:.4f}\n")
-    f.write(f"BLEU-4: {bleu_scores[3]:.4f}\n\n")
+    P, R, F1 = score(preds, refs, model_type=bert_model, lang=lang)
+    return {
+        "Precision": P.mean().item(),
+        "Recall": R.mean().item(),
+        "F1": F1.mean().item(),
+    }
 
-    # Write paired captions
-    for img_id in generated_captions:
-        f.write(f"Image ID: {img_id}\n")
-        f.write("Generated caption:\n")
-        f.write(f"  {generated_captions[img_id][0]}\n")  # Hypothesis (one caption)
-        f.write("Reference captions:\n")
-        for ref in ref_captions[img_id]:
-            f.write(f"  - {ref}\n")  # Multiple references possible
-        f.write("\n")
 
-print("BLEU scores and paired captions saved to bleu_scores_output.txt")
+def benchmark_caption_metrics(
+    ref_captions,
+    generated_captions,
+    output_path: str = "caption_metrics_output.txt",
+    bert_model: str = "bert-base-uncased",
+    lang: str = "en",
+):
+    """Compute BLEU and BERTScore metrics and write a shared report."""
+    bleu_metrics, bleu_verbose = compute_bleu_scores(ref_captions, generated_captions)
+    bert_metrics = compute_bertscore_metrics(ref_captions, generated_captions, bert_model, lang)
 
+    sorted_ids = sorted(generated_captions.keys())
+    with open(output_path, "w") as f:
+        f.write(f"Number of generated captions: {len(generated_captions)}\n\n")
+        f.write("Metric Summary (averaged across dataset):\n")
+        f.write(
+            "BLEU-1 | BLEU-2 | BLEU-3 | BLEU-4 | BERTScore-P | BERTScore-R | BERTScore-F1\n"
+        )
+        f.write(
+            f"{bleu_metrics['BLEU-1']:.4f} | {bleu_metrics['BLEU-2']:.4f} | {bleu_metrics['BLEU-3']:.4f} | {bleu_metrics['BLEU-4']:.4f} | "
+            f"{bert_metrics['Precision']:.4f} | {bert_metrics['Recall']:.4f} | {bert_metrics['F1']:.4f}\n\n"
+        )
+
+        if bleu_verbose:
+            f.write("BLEU Raw Statistics:\n")
+            f.write(bleu_verbose + "\n\n")
+
+        for img_id in sorted_ids:
+            f.write(f"Image ID: {img_id}\n")
+            f.write("Generated caption:\n")
+            f.write(f"  {generated_captions[img_id][0]}\n")
+            f.write("Reference captions:\n")
+            for ref in ref_captions[img_id]:
+                f.write(f"  - {ref}\n")
+            f.write("\n")
+
+    print(f"BLEU and BERTScore metrics saved to {output_path}")
+
+    return {"BLEU": bleu_metrics, "BERTScore": bert_metrics}
+
+metrics = benchmark_caption_metrics(
+    ref_captions,
+    generated_captions,
+    output_path="caption_metrics_output.txt",
+)
