@@ -41,7 +41,6 @@ dependencies = [
     "wandb",
     "wheel",
     "huggingface-hub==0.24.0",
-
 ]
 
 [project.optional-dependencies]
