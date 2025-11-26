@@ -7,6 +7,7 @@ anyio==4.11.0
 asttokens==3.0.0
 async-timeout==5.0.1
 attrs==25.4.0
+bert-score==0.3.13
 causal_conv1d==1.5.3.post1
 certifi==2025.10.5
 charset-normalizer==3.4.4

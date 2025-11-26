@@ -59,6 +59,13 @@ def main():
     else:
         methods_to_run = [args.method]
 
+    # Create a unique directory for this run
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir_name = f"run_{run_timestamp}"
+    base_run_dir = Path(args.output_dir) / run_dir_name
+    base_run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Saving all run artifacts to: {base_run_dir}")
+
     all_run_data = {}
 
     # Loop over methods
@@ -68,7 +75,7 @@ def main():
         print(f"{'='*40}\n")
         
         # Use method-specific subdirectories for cleaner organization
-        result_dir = Path(args.output_dir) / current_method
+        result_dir = base_run_dir / current_method
         result_dir.mkdir(parents=True, exist_ok=True)
 
         # 3. Initialize Generator
@@ -249,13 +256,62 @@ def main():
 
     # Comparison Visualization
     if "baseline" in all_run_data and "scratchpad" in all_run_data:
+        print("\nComputing comparison statistics...")
+        
+        base_res = {r["image_id"]: r for r in all_run_data["baseline"]["results"]}
+        scratch_res = {r["image_id"]: r for r in all_run_data["scratchpad"]["results"]}
+        
+        common_ids = set(base_res.keys()) & set(scratch_res.keys())
+        total_common = len(common_ids)
+        
+        # Compute differences and win rates
+        metrics_sum_diff = {}
+        metrics_wins = {}
+        
+        for img_id in common_ids:
+            base_metrics = base_res[img_id].get("metrics", {})
+            scratch_metrics = scratch_res[img_id].get("metrics", {})
+            
+            for k, v_base in base_metrics.items():
+                if not isinstance(v_base, (int, float)): continue
+                if k not in scratch_metrics: continue
+                v_scratch = scratch_metrics[k]
+                
+                diff = v_scratch - v_base
+                metrics_sum_diff[k] = metrics_sum_diff.get(k, 0.0) + diff
+                
+                if diff > 0:
+                    metrics_wins[k] = metrics_wins.get(k, 0) + 1
+        
+        # Averages
+        avg_diffs = {k: v / total_common for k, v in metrics_sum_diff.items()} if total_common > 0 else {}
+        win_rates = {k: (v / total_common) * 100 for k, v in metrics_wins.items()} if total_common > 0 else {}
+        
+        run_stats = {
+            "comparison": "scratchpad (A) vs baseline (B)",
+            "diff_meaning": "A - B",
+            "total_samples": total_common,
+            "aggregate_diffs": avg_diffs,
+            "win_rates": win_rates
+        }
+        
+        # Save summary JSON
+        save_json_results(run_stats, base_run_dir, "comparison_summary")
+        
         print("\nGenerating comparison visualization...")
-        comp_path = Path(args.output_dir) / f"comparison_baseline_vs_scratchpad_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        comp_path = base_run_dir / f"comparison_baseline_vs_scratchpad_{run_timestamp}.png"
+        
+        # Use scratchpad config as it contains the reasoning params
+        viz_config = all_run_data["scratchpad"]["meta"]["config"]
+        viz_config["timestamp"] = run_timestamp
+        
         create_comparison_visualization(
             all_run_data["baseline"], 
             all_run_data["scratchpad"], 
             images_map, 
-            comp_path
+            comp_path,
+            run_stats=run_stats,
+            config=viz_config
         )
 
 if __name__ == "__main__":

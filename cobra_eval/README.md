@@ -29,6 +29,16 @@ python -m cobra_eval --method baseline --num_samples 10
 python -m cobra_eval --method scratchpad --num_samples 100
 ```
 
+**Run comparison (Baseline vs Scratchpad):**
+```bash
+python -m cobra_eval --method both --num_samples 50
+```
+
+**Resume from latest run:**
+```bash
+python -m cobra_eval --method scratchpad --load_results latest
+```
+
 ### Command Line Arguments
 
 | Argument | Type | Default | Description |
@@ -50,14 +60,19 @@ python -m cobra_eval --method scratchpad --num_samples 100
 | `--output_dir` | str | `results` | Directory to save JSON results and visualizations. |
 | `--clear_cache` | flag | `False` | Clear GPU cache before loading the model. |
 | `--min_free_gb` | float | `8.0` | Minimum free GPU memory (GB) required to run. |
+| **Input/Resume** | | | |
+| `--load_results` | str | `None` | Path to results file to resume from (or "latest"). |
 
 ## Output Structure
 
-Results are saved to `results/` (or specified `--output_dir`) in structured JSON format, accompanied by a visualization image.
+Results are organized by run timestamp in the `results/` directory:
+`results/run_<timestamp>/<method>/results_<method>.json`
 
-**File naming:** `results_<method>_<timestamp>.json`
+When running `--method both`, a comparison summary and visualization are also generated in the run directory:
+- `comparison_summary_<timestamp>.json`: Win rates and metric differences.
+- `comparison_baseline_vs_scratchpad_<timestamp>.png`: Side-by-side visualization.
 
-**JSON Structure:**
+**JSON Structure (Individual Results):**
 ```json
 {
   "meta": {

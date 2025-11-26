@@ -118,11 +118,15 @@ def create_comparison_visualization(
     scratchpad_data: Dict[str, Any],
     images_map: Dict[int, Image.Image],
     output_path: Path,
+    run_stats: Dict[str, Any] = None,
+    config: Dict[str, Any] = None,
     max_images: int = 10
 ):
     """
     Create side-by-side comparison visualization.
     """
+    from matplotlib.gridspec import GridSpec
+
     # Map results by image_id
     base_map = {r["image_id"]: r for r in baseline_data["results"]}
     scratch_map = {r["image_id"]: r for r in scratchpad_data["results"]}
@@ -138,23 +142,36 @@ def create_comparison_visualization(
         return
 
     n_images = len(common_ids)
-    # 3 columns: Image, Baseline, Scratchpad
-    fig = plt.figure(figsize=(30, 8 * n_images))
+    
+    # Calculate figure height: rows for images
+    # Removed overview header as requested
+    row_height = 8
+    total_height = row_height * n_images
+    
+    fig = plt.figure(figsize=(30, total_height))
+    
+    # Use GridSpec to manage layout
+    n_rows = n_images
+    
+    # Equal height ratios
+    gs = GridSpec(n_rows, 3, figure=fig)
     
     for idx, img_id in enumerate(common_ids):
         base_res = base_map[img_id]
         scratch_res = scratch_map[img_id]
         image = images_map[img_id]
         
+        # Determine grid row
+        row = idx
+        
         # Col 1: Image & Refs
-        ax_img = plt.subplot(n_images, 3, idx * 3 + 1)
+        ax_img = fig.add_subplot(gs[row, 0])
         ax_img.imshow(image)
         ax_img.axis('off')
         ax_img.set_title(f'Image {img_id}', fontsize=16, fontweight='bold', pad=15)
         
         # Add refs below image
         ref_text = "References:\n" + "\n".join([f"- {r}" for r in base_res["reference_captions"][:3]])
-        # Render near bottom
         ax_img.text(0.05, -0.05, ref_text, transform=ax_img.transAxes, fontsize=11, verticalalignment='top', wrap=True)
         
         # Helper to render text block
@@ -181,14 +198,17 @@ def create_comparison_visualization(
                 ax.text(0, y, "Metrics:", fontweight='bold', fontsize=12)
                 y -= 0.04
                 
-                for k, v in res["metrics"].items():
-                    if not isinstance(v, float): continue
+                # Sort metrics for consistent display
+                sorted_metrics = sorted(res["metrics"].items())
+                
+                for k, v in sorted_metrics:
+                    if not isinstance(v, (int, float)): continue
                     
                     text = f"{k}: {v:.3f}"
                     color = "black"
                     
                     # Comparison diff
-                    if compare_with and k in compare_with["metrics"]:
+                    if compare_with and "metrics" in compare_with and k in compare_with["metrics"]:
                         base_v = compare_with["metrics"][k]
                         diff = v - base_v
                         # Only show diff if meaningful
@@ -204,7 +224,7 @@ def create_comparison_visualization(
             
             y -= 0.02
             
-            # Reasoning Trace (only if present)
+            # Reasoning Trace
             trace = res.get("reasoning_trace")
             if trace:
                 ax.text(0, y, "Reasoning Trace:", fontweight='bold', fontsize=12)
@@ -216,11 +236,11 @@ def create_comparison_visualization(
                     y -= 0.025
 
         # Col 2: Baseline
-        ax_base = plt.subplot(n_images, 3, idx * 3 + 2)
+        ax_base = fig.add_subplot(gs[row, 1])
         render_text_block(ax_base, "Baseline", base_res)
         
-        # Col 3: Scratchpad (Compare with Baseline)
-        ax_scratch = plt.subplot(n_images, 3, idx * 3 + 3)
+        # Col 3: Scratchpad
+        ax_scratch = fig.add_subplot(gs[row, 2])
         render_text_block(ax_scratch, "Scratchpad", scratch_res, compare_with=base_res)
 
     plt.tight_layout(pad=3.0)
