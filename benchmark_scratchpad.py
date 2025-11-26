@@ -1042,7 +1042,11 @@ def main():
         print(f"  BLEU-4: {scores[3]:.4f}")
     
     # Save results
-    output_dir = Path(args.output_dir)
+    run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_dir_name = f"run_{run_timestamp}"
+    output_dir = Path(args.output_dir) / run_dir_name
+    print(f"Saving all run artifacts to: {output_dir}")
+
     save_results(
         ref_captions,
         generated_captions,
