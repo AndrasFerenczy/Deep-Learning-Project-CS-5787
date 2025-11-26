@@ -30,6 +30,15 @@ class BERTScoreMetric(BaseMetric):
         
         P, R, F1 = score(preds, refs, model_type=self.model_type, lang=self.lang, device=device, verbose=False)
         
+        # Store per-sample scores
+        self.per_sample_scores = {}
+        for idx, img_id in enumerate(sorted_ids):
+            self.per_sample_scores[img_id] = {
+                "BERTScore-Precision": P[idx].item(),
+                "BERTScore-Recall": R[idx].item(),
+                "BERTScore-F1": F1[idx].item()
+            }
+        
         return {
             "BERTScore-Precision": P.mean().item(),
             "BERTScore-Recall": R.mean().item(),
