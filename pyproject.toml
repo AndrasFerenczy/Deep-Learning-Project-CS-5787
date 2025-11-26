@@ -39,8 +39,7 @@ dependencies = [
     "torchaudio",
     "transformers==4.34.1",
     "wandb",
-    "wheel",
-    "huggingface-hub==0.24.0",
+    "wheel"
 ]
 
 [project.optional-dependencies]

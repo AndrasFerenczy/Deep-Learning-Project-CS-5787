@@ -19,7 +19,6 @@ vlm.to(device, dtype=dtype)
 dataset = load_dataset("lmms-lab/COCO-Caption", split="val")
 user_prompt = "Please carefully observe the image and come up with a caption for the image."
 
-# Build prompt
 prompt_builder = vlm.get_prompt_builder()
 prompt_builder.add_turn(role="human", message=user_prompt)
 prompt_text = prompt_builder.get_prompt()
