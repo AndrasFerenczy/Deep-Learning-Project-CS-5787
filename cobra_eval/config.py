@@ -18,6 +18,13 @@ def parse_args() -> argparse.Namespace:
     
     # Dataset settings
     parser.add_argument(
+        "--dataset",
+        type=str,
+        choices=["coco", "mmstar"],
+        default="coco",
+        help="Dataset to use for evaluation"
+    )
+    parser.add_argument(
         "--num_samples",
         type=int,
         default=100,

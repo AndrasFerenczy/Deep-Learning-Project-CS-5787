@@ -8,14 +8,15 @@ from cobra import load
 
 from .config import parse_args
 from .registry import Registry
-from .data.loader import COCODatasetLoader
+from .data.loader import COCODatasetLoader, MMStarDatasetLoader
 from .utils.gpu import clear_gpu_memory, check_gpu_memory
 from .utils.io import save_json_results, load_json_results, find_latest_result_file
 from .utils.viz import create_visualization_from_results, create_comparison_visualization
 
 # Import all plugins to ensure registration
 from .generators import baseline, scratchpad, external
-from .metrics import bleu, bert_score
+from .metrics import bleu, bert_score, mmstar_accuracy
+
 
 def main():
     args = parse_args()
@@ -67,6 +68,7 @@ def main():
     print(f"Saving all run artifacts to: {base_run_dir}")
 
     all_run_data = {}
+    shared_images_map = {}  # Shared across methods for comparison
 
     # Loop over methods
     for current_method in methods_to_run:
@@ -90,12 +92,21 @@ def main():
         print(f"Initialized {current_method} generator")
 
         # 4. Load Dataset
-        print(f"Loading dataset ({args.num_samples} samples)...")
-        data_loader = COCODatasetLoader(
-            split="val",
-            streaming=not args.no_streaming,
-            limit=args.num_samples
-        )
+        print(f"Loading dataset: {args.dataset} ({args.num_samples} samples)...")
+        if args.dataset == "mmstar":
+            data_loader = MMStarDatasetLoader(
+                split="val",
+                streaming=not args.no_streaming,
+                limit=args.num_samples
+            )
+            is_mmstar = True
+        else:  # coco
+            data_loader = COCODatasetLoader(
+                split="val",
+                streaming=not args.no_streaming,
+                limit=args.num_samples
+            )
+            is_mmstar = False
 
         # 4b. Load Cached Results (if any)
         loaded_results_map = {}
@@ -133,96 +144,174 @@ def main():
         results = []
         references_map = {}  # For global metric computation
         predictions_map = {}
-        images_map = {}      # Keep images for visualization
+        images_map = {}      # Keep images for visualization (method-specific)
         
         start_time = datetime.now()
         print(f"Starting generation at {start_time.strftime('%H:%M:%S')}...")
-        for i, (image_id, image, refs) in enumerate(data_loader):
-            # Store image for visualization (limit to save memory)
-            if len(images_map) < 20: 
-                images_map[image_id] = image.copy()
+        
+        if is_mmstar:
+            # MMStar dataset format: (image_id, image, question_prompt, reference_answer)
+            for i, (image_id, image, question_prompt, reference_answer) in enumerate(data_loader):
+                # Store image for visualization (limit to save memory)
+                if len(images_map) < 20: 
+                    images_map[image_id] = image.copy()
+                    # Also store in shared map for comparison
+                    if image_id not in shared_images_map:
+                        shared_images_map[image_id] = image.copy()
                 
-            # Clean up refs (ensure list of strings)
-            if isinstance(refs, str):
-                refs = [refs]
+                # Check cache first
+                if args.load_results and image_id in loaded_results_map:
+                    print(f"Using cached result for image {image_id}")
+                    cached = loaded_results_map[image_id]
+                    
+                    # Store for metrics
+                    references_map[image_id] = [cached["reference_answer"]]
+                    predictions_map[image_id] = [cached["generated_answer"]]
+                    
+                    results.append(cached)
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples (Cached)...")
+                    continue
+                
+                # Generate using question prompt
+                gen_result = generator.generate(
+                    image, 
+                    question_prompt,
+                    temperature=args.temperature,
+                    max_new_tokens=args.max_new_tokens,
+                    reasoning_max_tokens=args.reasoning_max_tokens,
+                    repetition_penalty=args.repetition_penalty
+                )
+                
+                # Store for metrics
+                references_map[image_id] = [reference_answer]
+                predictions_map[image_id] = [gen_result.caption]
+                
+                # Record result for MMStar
+                results.append({
+                    "image_id": image_id,
+                    "question": question_prompt,
+                    "reference_answer": reference_answer,
+                    "generated_answer": gen_result.caption,
+                    "reasoning_trace": gen_result.reasoning_trace,
+                    "metadata": gen_result.metadata,
+                    "metrics": {}  # Populated later
+                })
+                
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples...")
+                if (i + 1) % 10 == 0:
+                    clear_gpu_memory()
+        else:
+            # COCO dataset format: (image_id, image, refs)
+            for i, (image_id, image, refs) in enumerate(data_loader):
+                # Store image for visualization (limit to save memory)
+                if len(images_map) < 20: 
+                    images_map[image_id] = image.copy()
+                    # Also store in shared map for comparison
+                    if image_id not in shared_images_map:
+                        shared_images_map[image_id] = image.copy()
+                    
+                # Clean up refs (ensure list of strings)
+                if isinstance(refs, str):
+                    refs = [refs]
 
-            # Check cache first
-            if args.load_results and image_id in loaded_results_map:
-                print(f"Using cached result for image {image_id}")
-                cached = loaded_results_map[image_id]
+                # Check cache first
+                if args.load_results and image_id in loaded_results_map:
+                    print(f"Using cached result for image {image_id}")
+                    cached = loaded_results_map[image_id]
+                    
+                    # Store for metrics
+                    references_map[image_id] = refs
+                    predictions_map[image_id] = [cached["generated_caption"]]
+                    
+                    results.append(cached)
+                    
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples (Cached)...")
+                    continue
+                    
+                # Generate
+                gen_result = generator.generate(
+                    image, 
+                    "Please carefully observe the image and come up with a caption for the image.",
+                    temperature=args.temperature,
+                    max_new_tokens=args.max_new_tokens,
+                    reasoning_max_tokens=args.reasoning_max_tokens,
+                    repetition_penalty=args.repetition_penalty
+                )
                 
                 # Store for metrics
                 references_map[image_id] = refs
-                predictions_map[image_id] = [cached["generated_caption"]]
+                predictions_map[image_id] = [gen_result.caption]
                 
-                results.append(cached)
+                # Record result
+                results.append({
+                    "image_id": image_id,
+                    "reference_captions": refs,
+                    "generated_caption": gen_result.caption,
+                    "reasoning_trace": gen_result.reasoning_trace,
+                    "metadata": gen_result.metadata,
+                    "metrics": {} # Populated later
+                })
                 
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples (Cached)...")
-                continue
-                
-            # Generate
-            gen_result = generator.generate(
-                image, 
-                "Please carefully observe the image and come up with a caption for the image.",
-                temperature=args.temperature,
-                max_new_tokens=args.max_new_tokens,
-                reasoning_max_tokens=args.reasoning_max_tokens,
-                repetition_penalty=args.repetition_penalty
-            )
-            
-            # Store for metrics
-            references_map[image_id] = refs
-            predictions_map[image_id] = [gen_result.caption]
-            
-            # Record result
-            results.append({
-                "image_id": image_id,
-                "reference_captions": refs,
-                "generated_caption": gen_result.caption,
-                "reasoning_trace": gen_result.reasoning_trace,
-                "metadata": gen_result.metadata,
-                "metrics": {} # Populated later
-            })
-            
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples...")
-            if (i + 1) % 10 == 0:
-                clear_gpu_memory()
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples...")
+                if (i + 1) % 10 == 0:
+                    clear_gpu_memory()
 
         # 6. Compute Metrics
-        print("Computing global metrics...")
         aggregate_metrics = {}
         
-        # Instantiate all registered metrics
-        metric_instances = []
-        try:
-            metric_instances.append(Registry.get_metric("bleu")())
-            metric_instances.append(Registry.get_metric("bert_score")())
-        except Exception as e:
-            print(f"Warning: Could not initialize some metrics: {e}")
-
-        for metric in metric_instances:
+        if is_mmstar:
+            # MMStar accuracy metric
+            print("Computing MMStar accuracy metrics...")
             try:
-                scores = metric.compute(references_map, predictions_map)
+                accuracy_metric = Registry.get_metric("mmstar_accuracy")()
+                scores = accuracy_metric.compute(references_map, predictions_map)
                 aggregate_metrics.update(scores)
                 
-                # Hack: re-compute per sample for BLEU since it's fast
-                if isinstance(metric, Registry.get_metric("bleu")):
+                # Store per-sample scores
+                if hasattr(accuracy_metric, "per_sample_scores"):
                     for res in results:
                         img_id = res["image_id"]
-                        single_ref = {img_id: references_map[img_id]}
-                        single_pred = {img_id: predictions_map[img_id]}
-                        sample_score = metric.compute(single_ref, single_pred)
-                        res["metrics"].update(sample_score)
+                        if img_id in accuracy_metric.per_sample_scores:
+                            res["metrics"].update(accuracy_metric.per_sample_scores[img_id])
                 
-                # Retrieve per-sample scores for BERTScore
-                if isinstance(metric, Registry.get_metric("bert_score")) and hasattr(metric, "per_sample_scores"):
-                    for res in results:
-                        img_id = res["image_id"]
-                        if img_id in metric.per_sample_scores:
-                            res["metrics"].update(metric.per_sample_scores[img_id])
-                        
+                print(f"MMStar Accuracy: {scores.get('MMStar-Accuracy', 0.0):.3f} ({scores.get('MMStar-Correct', 0)}/{scores.get('MMStar-Total', 0)})")
             except Exception as e:
-                print(f"Error computing metric {metric.__class__.__name__}: {e}")
+                print(f"Error computing MMStar accuracy metric: {e}")
+        else:
+            # COCO metrics
+            print("Computing global metrics...")
+            
+            # Instantiate all registered metrics
+            metric_instances = []
+            try:
+                metric_instances.append(Registry.get_metric("bleu")())
+                metric_instances.append(Registry.get_metric("bert_score")())
+            except Exception as e:
+                print(f"Warning: Could not initialize some metrics: {e}")
+
+            for metric in metric_instances:
+                try:
+                    scores = metric.compute(references_map, predictions_map)
+                    aggregate_metrics.update(scores)
+                    
+                    # Hack: re-compute per sample for BLEU since it's fast
+                    if isinstance(metric, Registry.get_metric("bleu")):
+                        for res in results:
+                            img_id = res["image_id"]
+                            single_ref = {img_id: references_map[img_id]}
+                            single_pred = {img_id: predictions_map[img_id]}
+                            sample_score = metric.compute(single_ref, single_pred)
+                            res["metrics"].update(sample_score)
+                    
+                    # Retrieve per-sample scores for BERTScore
+                    if isinstance(metric, Registry.get_metric("bert_score")) and hasattr(metric, "per_sample_scores"):
+                        for res in results:
+                            img_id = res["image_id"]
+                            if img_id in metric.per_sample_scores:
+                                res["metrics"].update(metric.per_sample_scores[img_id])
+                            
+                except Exception as e:
+                    print(f"Error computing metric {metric.__class__.__name__}: {e}")
 
         # 7. Save Results
         # Create a copy of args with the correct method name for the record
@@ -264,36 +353,74 @@ def main():
         common_ids = set(base_res.keys()) & set(scratch_res.keys())
         total_common = len(common_ids)
         
-        # Compute differences and win rates
-        metrics_sum_diff = {}
-        metrics_wins = {}
+        # Check if this is MMStar format
+        is_mmstar_comp = "question" in base_res[list(common_ids)[0]] if common_ids else False
         
-        for img_id in common_ids:
-            base_metrics = base_res[img_id].get("metrics", {})
-            scratch_metrics = scratch_res[img_id].get("metrics", {})
+        if is_mmstar_comp:
+            # For MMStar, compute accuracy comparison
+            base_accuracy = all_run_data["baseline"]["aggregate_metrics"].get("MMStar-Accuracy", 0.0)
+            scratch_accuracy = all_run_data["scratchpad"]["aggregate_metrics"].get("MMStar-Accuracy", 0.0)
+            accuracy_diff = scratch_accuracy - base_accuracy
             
-            for k, v_base in base_metrics.items():
-                if not isinstance(v_base, (int, float)): continue
-                if k not in scratch_metrics: continue
-                v_scratch = scratch_metrics[k]
+            base_correct = all_run_data["baseline"]["aggregate_metrics"].get("MMStar-Correct", 0)
+            scratch_correct = all_run_data["scratchpad"]["aggregate_metrics"].get("MMStar-Correct", 0)
+            base_total = all_run_data["baseline"]["aggregate_metrics"].get("MMStar-Total", 0)
+            scratch_total = all_run_data["scratchpad"]["aggregate_metrics"].get("MMStar-Total", 0)
+            
+            # Compute per-sample differences
+            accuracy_wins = 0
+            for img_id in common_ids:
+                base_correct_sample = base_res[img_id].get("metrics", {}).get("MMStar-Correct", 0.0)
+                scratch_correct_sample = scratch_res[img_id].get("metrics", {}).get("MMStar-Correct", 0.0)
+                if scratch_correct_sample > base_correct_sample:
+                    accuracy_wins += 1
+            
+            win_rate = (accuracy_wins / total_common * 100) if total_common > 0 else 0.0
+            
+            run_stats = {
+                "comparison": "scratchpad (A) vs baseline (B)",
+                "diff_meaning": "A - B",
+                "total_samples": total_common,
+                "baseline_accuracy": base_accuracy,
+                "scratchpad_accuracy": scratch_accuracy,
+                "accuracy_diff": accuracy_diff,
+                "baseline_correct": base_correct,
+                "scratchpad_correct": scratch_correct,
+                "baseline_total": base_total,
+                "scratchpad_total": scratch_total,
+                "accuracy_win_rate": win_rate
+            }
+        else:
+            # Compute differences and win rates for COCO
+            metrics_sum_diff = {}
+            metrics_wins = {}
+            
+            for img_id in common_ids:
+                base_metrics = base_res[img_id].get("metrics", {})
+                scratch_metrics = scratch_res[img_id].get("metrics", {})
                 
-                diff = v_scratch - v_base
-                metrics_sum_diff[k] = metrics_sum_diff.get(k, 0.0) + diff
-                
-                if diff > 0:
-                    metrics_wins[k] = metrics_wins.get(k, 0) + 1
-        
-        # Averages
-        avg_diffs = {k: v / total_common for k, v in metrics_sum_diff.items()} if total_common > 0 else {}
-        win_rates = {k: (v / total_common) * 100 for k, v in metrics_wins.items()} if total_common > 0 else {}
-        
-        run_stats = {
-            "comparison": "scratchpad (A) vs baseline (B)",
-            "diff_meaning": "A - B",
-            "total_samples": total_common,
-            "aggregate_diffs": avg_diffs,
-            "win_rates": win_rates
-        }
+                for k, v_base in base_metrics.items():
+                    if not isinstance(v_base, (int, float)): continue
+                    if k not in scratch_metrics: continue
+                    v_scratch = scratch_metrics[k]
+                    
+                    diff = v_scratch - v_base
+                    metrics_sum_diff[k] = metrics_sum_diff.get(k, 0.0) + diff
+                    
+                    if diff > 0:
+                        metrics_wins[k] = metrics_wins.get(k, 0) + 1
+            
+            # Averages
+            avg_diffs = {k: v / total_common for k, v in metrics_sum_diff.items()} if total_common > 0 else {}
+            win_rates = {k: (v / total_common) * 100 for k, v in metrics_wins.items()} if total_common > 0 else {}
+            
+            run_stats = {
+                "comparison": "scratchpad (A) vs baseline (B)",
+                "diff_meaning": "A - B",
+                "total_samples": total_common,
+                "aggregate_diffs": avg_diffs,
+                "win_rates": win_rates
+            }
         
         # Save summary JSON
         save_json_results(run_stats, base_run_dir, "comparison_summary")
@@ -308,7 +435,7 @@ def main():
         create_comparison_visualization(
             all_run_data["baseline"], 
             all_run_data["scratchpad"], 
-            images_map, 
+            shared_images_map, 
             comp_path,
             run_stats=run_stats,
             config=viz_config

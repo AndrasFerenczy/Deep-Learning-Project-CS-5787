@@ -16,14 +16,6 @@ class ScratchpadGenerator(BaseGenerator):
         self.vlm = vlm
         self.scratchpad_passes = scratchpad_passes
         
-        # Default prompts
-        self.reasoning_prompt = (
-            "Analyze this image systematically. First, identify all major objects and their colors, "
-            "sizes, and positions. Then describe the spatial relationships between objects (left, right, "
-            "in front of, behind, etc.). Finally, note any distinctive features, actions, or context. "
-            "Be specific and detailed. Do NOT write a caption - only provide your analytical observations."
-        )
-
     def generate(self, image: Image.Image, prompt: str, **kwargs) -> GenerationResult:
         reasoning_max_tokens = kwargs.get('reasoning_max_tokens', 256)
         repetition_penalty = kwargs.get('repetition_penalty', 1.2)
@@ -37,7 +29,6 @@ class ScratchpadGenerator(BaseGenerator):
         reasoning_kwargs['repetition_penalty'] = repetition_penalty
 
         traces: List[str] = []
-        current_context = ""
         
         # Multi-pass reasoning
         for i in range(self.scratchpad_passes):
@@ -49,7 +40,16 @@ class ScratchpadGenerator(BaseGenerator):
             # Let's implement a refinement chain if passes > 1
             
             if i == 0:
-                msg = self.reasoning_prompt
+                # Create reasoning prompt based on the actual user prompt
+                # This makes the reasoning relevant to the task (captioning, QA, etc.)
+                msg = (
+                    f"Before answering the following question, analyze this image systematically. "
+                    f"First, identify all major objects and their colors, sizes, and positions. "
+                    f"Then describe the spatial relationships between objects (left, right, "
+                    f"in front of, behind, etc.). Finally, note any distinctive features, actions, or context. "
+                    f"Be specific and detailed. Do NOT provide your final answer yet - only provide your analytical observations.\n\n"
+                    f"Question: {prompt}"
+                )
             else:
                 msg = f"Review your previous analysis:\n{traces[-1]}\n\nRefine and expand on this analysis. Missed anything? Be more specific."
                 
@@ -73,30 +73,32 @@ class ScratchpadGenerator(BaseGenerator):
         # Final consolidation of traces
         final_reasoning = "\n\n".join([t for t in traces if t])
         
-        # Second pass: Generate final caption
-        prompt_builder_caption = self.vlm.get_prompt_builder()
+        # Second pass: Generate final answer using the original prompt
+        prompt_builder_final = self.vlm.get_prompt_builder()
         
         if not final_reasoning or len(final_reasoning.split()) < 5:
+            # If reasoning is insufficient, just use the original prompt
             combined_prompt = prompt
         else:
+            # Combine the original prompt with the reasoning trace
             combined_prompt = (
                 f"{prompt}\n\n"
                 f"Based on the following detailed analysis:\n{final_reasoning}\n\n"
-                f"Now provide a concise, natural caption that summarizes the key elements:"
+                f"Now provide your answer:"
             )
             
-        prompt_builder_caption.add_turn(role="human", message=combined_prompt)
-        caption_prompt_text = prompt_builder_caption.get_prompt()
+        prompt_builder_final.add_turn(role="human", message=combined_prompt)
+        final_prompt_text = prompt_builder_final.get_prompt()
         
-        final_caption = self.vlm.generate(
+        final_answer = self.vlm.generate(
             image,
-            caption_prompt_text,
+            final_prompt_text,
             use_cache=True,
             **gen_kwargs
         )
         
         return GenerationResult(
-            caption=final_caption,
+            caption=final_answer,
             reasoning_trace=final_reasoning,
             metadata={
                 "method": "scratchpad",
