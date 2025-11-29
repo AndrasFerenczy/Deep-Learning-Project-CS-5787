@@ -65,15 +65,12 @@ def main(config: QLoRAConfig):
         model_id=config.model_id,
         pretrained_checkpoint=config.pretrained_checkpoint,
         hf_token=config.hf_token,
-        load_in_4bit=config.load_in_4bit,
-        bnb_4bit_compute_dtype=config.bnb_4bit_compute_dtype,
         freeze_vision_encoder=config.freeze_vision_encoder,
         lora_r=config.lora_r,
         lora_alpha=config.lora_alpha,
         lora_dropout=config.lora_dropout,
         lora_target_modules=config.lora_target_modules,
         lora_bias=config.lora_bias,
-        use_quantized_loader=True,  # Use quantized loader for proper QLoRA
     )
     
     # Get tokenizer - either from VLM or load it separately if using quantized loader
@@ -129,6 +126,16 @@ def main(config: QLoRAConfig):
     
     # Note: SFTTrainer handles tokenization internally when dataset_text_field is provided
     # So we don't need a custom data collator
+    
+    # Print model info for debugging
+    print(f"\nModel info:")
+    print(f"  Model type: {type(llm_backbone)}")
+    if hasattr(llm_backbone, 'config'):
+        print(f"  Hidden size: {llm_backbone.config.d_model if hasattr(llm_backbone.config, 'd_model') else 'N/A'}")
+        print(f"  Vocab size: {llm_backbone.config.vocab_size if hasattr(llm_backbone.config, 'vocab_size') else 'N/A'}")
+    if hasattr(llm_backbone, 'backbone') and hasattr(llm_backbone.backbone, 'embedding'):
+        emb = llm_backbone.backbone.embedding
+        print(f"  Embedding shape: {emb.weight.shape if hasattr(emb, 'weight') else 'N/A'}")
     
     # Enable gradient checkpointing to save memory
     # Try different methods depending on the model type
@@ -202,6 +209,15 @@ def main(config: QLoRAConfig):
     print("Creating trainer...")
     print("=" * 80)
     
+    # Create a custom data collator to ensure proper input formatting
+    from transformers import DataCollatorForLanguageModeling
+    
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,  # Causal LM, not masked LM
+        pad_to_multiple_of=8,  # Pad to multiple of 8 for efficiency
+    )
+    
     trainer = SFTTrainer(
         model=llm_backbone,
         args=training_args,
@@ -209,7 +225,8 @@ def main(config: QLoRAConfig):
         tokenizer=tokenizer,
         dataset_text_field="text",  # Specify the text field in the dataset
         packing=False,  # Don't pack sequences (we handle formatting manually)
-        max_seq_length=512,  # Reduced to avoid shape issues with quantized model
+        # max_seq_length=512,  # Reduced to avoid shape issues with quantized model
+        data_collator=data_collator,  # Use custom collator
     )
     
     # Train

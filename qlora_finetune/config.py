@@ -16,17 +16,11 @@ class QLoRAConfig:
     hf_token: Optional[str] = None  # HuggingFace token (or path to .hf_token file)
     
     # LoRA configuration
-    lora_r: int = 16  # LoRA rank
-    lora_alpha: int = 32  # LoRA alpha
+    lora_r: int = 8  # LoRA rank
+    lora_alpha: int = 16  # LoRA alpha
     lora_dropout: float = 0.05  # LoRA dropout
     lora_target_modules: Optional[List[str]] = None  # Target modules for LoRA (None = auto-detect)
     lora_bias: str = "none"  # LoRA bias: "none", "all", or "lora_only"
-    
-    # Quantization configuration
-    load_in_4bit: bool = True  # Use 4-bit quantization
-    bnb_4bit_compute_dtype: str = "float16"  # Compute dtype: "float16" or "bfloat16"
-    bnb_4bit_quant_type: str = "nf4"  # Quantization type: "nf4" or "fp4"
-    bnb_4bit_use_double_quant: bool = True  # Use double quantization
     
     # Dataset configuration
     dataset_name: str = "Xkev/LLaVA-CoT-100k"  # HuggingFace dataset name
@@ -37,8 +31,8 @@ class QLoRAConfig:
     
     # Training configuration
     output_dir: Path = Path("./qlora_outputs")  # Output directory
-    per_device_train_batch_size: int = 4  # Batch size per device
-    gradient_accumulation_steps: int = 4  # Gradient accumulation steps
+    per_device_train_batch_size: int = 1  # Batch size per device
+    gradient_accumulation_steps: int = 1  # Gradient accumulation steps
     learning_rate: float = 2e-5  # Learning rate
     num_train_epochs: int = 2  # Number of training epochs
     max_steps: Optional[int] = None  # Maximum training steps (overrides epochs if set)

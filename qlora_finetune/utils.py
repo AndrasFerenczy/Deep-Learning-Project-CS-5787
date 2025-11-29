@@ -46,13 +46,19 @@ def find_mamba_target_modules(model) -> List[str]:
     ]
     
     # Check all named modules
+    excluded_modules = {"in_proj"}  # Exclude in_proj to avoid shape issues with quantized models
     for name, module in model.named_modules():
         if isinstance(module, nn.Linear):
+            # Extract just the module name (last part)
+            module_name = name.split('.')[-1]
+            # Skip excluded modules
+            if module_name in excluded_modules:
+                continue
             # Check if it matches Mamba SSM patterns
             for pattern in mamba_patterns + projector_patterns:
                 if pattern in name.lower():
-                    # Extract the full module path
-                    target_modules.add(name)
+                    # Use just the module name, not the full path
+                    target_modules.add(module_name)
                     break
     
     # If no specific patterns found, try to find linear layers in mixer/SSM blocks
