@@ -4,17 +4,19 @@ Main entry point for Cobra Evaluation System.
 import torch
 from pathlib import Path
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from cobra import load
 
 from .config import parse_args
 from .registry import Registry
 from .data.loader import COCODatasetLoader
 from .utils.gpu import clear_gpu_memory, check_gpu_memory
-from .utils.io import save_json_results, load_json_results, find_latest_result_file
+from .utils.io import save_json_results, load_json_results, find_latest_result_file, save_checkpoint, find_latest_checkpoint
 from .utils.viz import create_visualization_from_results, create_comparison_visualization
 
 # Import all plugins to ensure registration
-from .generators import baseline, scratchpad, external
+from .generators import baseline, scratchpad, scratchpad_compare, external, llava_cot
 from .metrics import bleu, bert_score
 
 def main():
@@ -56,6 +58,8 @@ def main():
     # Determine methods to run
     if args.method == "both":
         methods_to_run = ["baseline", "scratchpad"]
+    elif args.method == "all":
+        methods_to_run = ["baseline", "scratchpad", "llava_cot"]
     else:
         methods_to_run = [args.method]
 
@@ -82,7 +86,11 @@ def main():
         generator_cls = Registry.get_generator(current_method)
         
         # Handle different init signatures
-        if current_method == "scratchpad":
+        if current_method == "scratchpad_compare":
+            # Compare mode: compare multiple pass counts (1, 2, 3, 4 up to scratchpad_passes)
+            max_passes = max(4, args.scratchpad_passes)  # Default to comparing 1-4 passes
+            generator = generator_cls(vlm, scratchpad_passes=max_passes)
+        elif current_method in ["scratchpad", "llava_cot"]:
             generator = generator_cls(vlm, scratchpad_passes=args.scratchpad_passes)
         else:
             generator = generator_cls(vlm)
@@ -99,17 +107,34 @@ def main():
 
         # 4b. Load Cached Results (if any)
         loaded_results_map = {}
-        if args.load_results:
+        
+        path_to_load = args.load_results
+        
+        # Check for checkpoint resume
+        if args.resume_from_checkpoint and not path_to_load:
+            checkpoint_path = find_latest_checkpoint(result_dir, f"checkpoint_{current_method}")
+            if checkpoint_path:
+                print(f"Found checkpoint: {checkpoint_path}")
+                path_to_load = str(checkpoint_path)
+        
+        # Check for default baseline cache
+        if current_method == "baseline" and not args.no_baseline_cache and not path_to_load:
+            default_cache = Path(__file__).parent / "data" / "baseline_caption_COCO_output.json"
+            if default_cache.exists():
+                print(f"Using default baseline cache: {default_cache}")
+                path_to_load = str(default_cache)
+
+        if path_to_load:
             load_path = None
             
             # Resolve path
-            if args.load_results.lower() == "latest":
+            if path_to_load.lower() == "latest":
                 prefix = f"results_{current_method}"
                 load_path = find_latest_result_file(result_dir, prefix)
                 if not load_path:
                     print(f"No previous results found for method '{current_method}' in {result_dir}")
             else:
-                p = Path(args.load_results)
+                p = Path(path_to_load)
                 if p.is_dir():
                     prefix = f"results_{current_method}"
                     load_path = find_latest_result_file(p, prefix)
@@ -120,14 +145,48 @@ def main():
                 print(f"Loading results from {load_path}...")
                 try:
                     loaded_data = load_json_results(load_path)
-                    for r in loaded_data.get("results", []):
-                        loaded_results_map[r["image_id"]] = r
-                    print(f"Loaded {len(loaded_results_map)} cached results.")
+                    
+                    # Handle different schemas (ours vs baseline cache)
+                    results_list = loaded_data.get("results", [])
+                    if not results_list:
+                        results_list = loaded_data.get("images", [])
+                        
+                    for r in results_list:
+                        # Extract ID (supports 'image_id' or 'id')
+                        raw_id = r.get("image_id", r.get("id"))
+                        if raw_id is not None:
+                            # Try to convert to int for matching with loader
+                            try:
+                                key_id = int(raw_id)
+                            except (ValueError, TypeError):
+                                key_id = raw_id
+                                
+                            loaded_results_map[key_id] = r
+                            
+                            # Normalize the record for our use
+                            if "generated_caption" not in r and "caption" in r:
+                                r["generated_caption"] = r["caption"]
+                    
+                    # Check if this is a checkpoint
+                    is_checkpoint = loaded_data.get("meta", {}).get("is_checkpoint", False)
+                    if is_checkpoint:
+                        checkpoint_info = loaded_data.get("checkpoint_info", {})
+                        processed = checkpoint_info.get("processed_count", len(loaded_results_map))
+                        remaining = checkpoint_info.get("remaining_count", args.num_samples - processed)
+                        print(f"Loaded checkpoint: {processed} samples processed, {remaining} remaining")
+                    else:
+                        print(f"Loaded {len(loaded_results_map)} cached results.")
                 except Exception as e:
                     print(f"Error loading results file: {e}")
+                    import traceback
+                    traceback.print_exc()
                     print("Continuing without cache...")
-            elif args.load_results:
-                 print(f"Warning: Results file not found: {args.load_results}")
+            elif path_to_load and path_to_load != args.load_results:
+                # Silent fail if default cache is missing/invalid logic? 
+                # Actually we checked exists() for default cache above.
+                pass
+            elif path_to_load:
+                 print(f"Warning: Results file not found: {path_to_load}")
 
         # 5. Run Evaluation
         results = []
@@ -147,13 +206,23 @@ def main():
                 refs = [refs]
 
             # Check cache first
-            if args.load_results and image_id in loaded_results_map:
+            if image_id in loaded_results_map:
                 print(f"Using cached result for image {image_id}")
                 cached = loaded_results_map[image_id]
                 
                 # Store for metrics
                 references_map[image_id] = refs
                 predictions_map[image_id] = [cached["generated_caption"]]
+                
+                # Ensure the cached result has the necessary structure for downstream processing
+                if "metrics" not in cached:
+                    cached["metrics"] = {}
+                if "image_id" not in cached:
+                    cached["image_id"] = image_id
+                
+                # If we want to prefer the fresh references from the loader over the cached ones
+                # (to ensure consistency if the dataset version changed slightly), we can update it:
+                cached["reference_captions"] = refs
                 
                 results.append(cached)
                 
@@ -172,7 +241,21 @@ def main():
             
             # Store for metrics
             references_map[image_id] = refs
-            predictions_map[image_id] = [gen_result.caption]
+            
+            # For scratchpad_compare, compute metrics for each pass count
+            if current_method == "scratchpad_compare" and "comparison" in gen_result.metadata:
+                # Store predictions for each pass count
+                comparison_data = gen_result.metadata.get("comparison", {})
+                for passes, comp_data in comparison_data.items():
+                    pass_key = f"pass_{passes}"
+                    if pass_key not in predictions_map:
+                        predictions_map[pass_key] = {}
+                    predictions_map[pass_key][image_id] = [comp_data["caption"]]
+                
+                # Use best pass caption for main prediction map
+                predictions_map[image_id] = [gen_result.caption]
+            else:
+                predictions_map[image_id] = [gen_result.caption]
             
             # Record result
             results.append({
@@ -185,6 +268,38 @@ def main():
             })
             
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples...")
+            
+            # Save checkpoint periodically
+            if args.checkpoint_interval > 0 and (i + 1) % args.checkpoint_interval == 0:
+                # Compute partial metrics for checkpoint
+                partial_references = {img_id: references_map[img_id] for img_id in references_map.keys()}
+                partial_predictions = {img_id: predictions_map[img_id] for img_id in predictions_map.keys() if img_id in partial_references}
+                
+                # Create checkpoint data
+                checkpoint_data = {
+                    "meta": {
+                        "timestamp": datetime.now().isoformat(),
+                        "config": vars(args),
+                        "method": current_method,
+                        "samples_processed": i + 1,
+                        "total_samples": args.num_samples,
+                        "is_checkpoint": True
+                    },
+                    "results": results,
+                    "checkpoint_info": {
+                        "processed_count": i + 1,
+                        "remaining_count": args.num_samples - (i + 1)
+                    }
+                }
+                
+                checkpoint_path = save_checkpoint(
+                    checkpoint_data, 
+                    result_dir, 
+                    f"checkpoint_{current_method}",
+                    sample_count=i + 1
+                )
+                print(f"  → Checkpoint saved: {checkpoint_path.name} ({i + 1}/{args.num_samples} samples)")
+            
             if (i + 1) % 10 == 0:
                 clear_gpu_memory()
 
@@ -205,6 +320,20 @@ def main():
                 scores = metric.compute(references_map, predictions_map)
                 aggregate_metrics.update(scores)
                 
+                # For scratchpad_compare, compute metrics for each pass count
+                if current_method == "scratchpad_compare":
+                    # Compute metrics for each pass count separately
+                    comparison_metrics = {}
+                    for pass_key in predictions_map.keys():
+                        if pass_key.startswith("pass_"):
+                            pass_predictions = {img_id: predictions_map[pass_key][img_id] 
+                                              for img_id in references_map.keys() 
+                                              if img_id in predictions_map[pass_key]}
+                            if pass_predictions:
+                                pass_scores = metric.compute(references_map, pass_predictions)
+                                comparison_metrics[pass_key] = pass_scores
+                    aggregate_metrics["comparison_by_passes"] = comparison_metrics
+                
                 # Hack: re-compute per sample for BLEU since it's fast
                 if isinstance(metric, Registry.get_metric("bleu")):
                     for res in results:
@@ -213,6 +342,19 @@ def main():
                         single_pred = {img_id: predictions_map[img_id]}
                         sample_score = metric.compute(single_ref, single_pred)
                         res["metrics"].update(sample_score)
+                        
+                        # For scratchpad_compare, also compute per-sample metrics for each pass
+                        if current_method == "scratchpad_compare" and "comparison" in res.get("metadata", {}):
+                            for passes, comp_data in res["metadata"]["comparison"].items():
+                                pass_key = f"pass_{passes}"
+                                if pass_key in predictions_map and img_id in predictions_map[pass_key]:
+                                    pass_pred = {img_id: predictions_map[pass_key][img_id]}
+                                    pass_sample_score = metric.compute(single_ref, pass_pred)
+                                    if "comparison_metrics" not in res["metrics"]:
+                                        res["metrics"]["comparison_metrics"] = {}
+                                    if pass_key not in res["metrics"]["comparison_metrics"]:
+                                        res["metrics"]["comparison_metrics"][pass_key] = {}
+                                    res["metrics"]["comparison_metrics"][pass_key].update(pass_sample_score)
                 
                 # Retrieve per-sample scores for BERTScore
                 if isinstance(metric, Registry.get_metric("bert_score")) and hasattr(metric, "per_sample_scores"):
@@ -254,60 +396,88 @@ def main():
         # Store for comparison
         all_run_data[current_method] = output_data
 
-    # Comparison Visualization
-    if "baseline" in all_run_data and "scratchpad" in all_run_data:
+    # Comparison Visualization - Compare all methods
+    if len(all_run_data) >= 2:
         print("\nComputing comparison statistics...")
         
-        base_res = {r["image_id"]: r for r in all_run_data["baseline"]["results"]}
-        scratch_res = {r["image_id"]: r for r in all_run_data["scratchpad"]["results"]}
+        # Map results by image_id for each method
+        method_results = {}
+        for method, data in all_run_data.items():
+            method_results[method] = {r["image_id"]: r for r in data["results"]}
         
-        common_ids = set(base_res.keys()) & set(scratch_res.keys())
+        # Find common images across all methods
+        common_ids = set(method_results[list(method_results.keys())[0]].keys())
+        for method in method_results.keys():
+            common_ids &= set(method_results[method].keys())
         total_common = len(common_ids)
         
-        # Compute differences and win rates
-        metrics_sum_diff = {}
-        metrics_wins = {}
+        # Compute aggregate metrics for each method
+        method_aggregates = {}
+        for method, results_map in method_results.items():
+            method_aggregates[method] = {}
+            for metric_name in ["BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4", "BERTScore-Precision", "BERTScore-Recall", "BERTScore-F1"]:
+                values = []
+                for img_id in common_ids:
+                    metrics = results_map[img_id].get("metrics", {})
+                    if metric_name in metrics and isinstance(metrics[metric_name], (int, float)):
+                        values.append(metrics[metric_name])
+                if values:
+                    method_aggregates[method][metric_name] = sum(values) / len(values)
         
-        for img_id in common_ids:
-            base_metrics = base_res[img_id].get("metrics", {})
-            scratch_metrics = scratch_res[img_id].get("metrics", {})
+        # Compute pairwise comparisons vs baseline
+        baseline_method = "baseline" if "baseline" in method_results else list(method_results.keys())[0]
+        comparisons = {}
+        
+        for method in method_results.keys():
+            if method == baseline_method:
+                continue
             
-            for k, v_base in base_metrics.items():
-                if not isinstance(v_base, (int, float)): continue
-                if k not in scratch_metrics: continue
-                v_scratch = scratch_metrics[k]
+            metrics_sum_diff = {}
+            metrics_wins = {}
+            
+            for img_id in common_ids:
+                base_metrics = method_results[baseline_method][img_id].get("metrics", {})
+                method_metrics = method_results[method][img_id].get("metrics", {})
                 
-                diff = v_scratch - v_base
-                metrics_sum_diff[k] = metrics_sum_diff.get(k, 0.0) + diff
-                
-                if diff > 0:
-                    metrics_wins[k] = metrics_wins.get(k, 0) + 1
-        
-        # Averages
-        avg_diffs = {k: v / total_common for k, v in metrics_sum_diff.items()} if total_common > 0 else {}
-        win_rates = {k: (v / total_common) * 100 for k, v in metrics_wins.items()} if total_common > 0 else {}
+                for k, v_base in base_metrics.items():
+                    if not isinstance(v_base, (int, float)): continue
+                    if k not in method_metrics: continue
+                    v_method = method_metrics[k]
+                    
+                    diff = v_method - v_base
+                    metrics_sum_diff[k] = metrics_sum_diff.get(k, 0.0) + diff
+                    
+                    if diff > 0:
+                        metrics_wins[k] = metrics_wins.get(k, 0) + 1
+            
+            # Averages
+            avg_diffs = {k: v / total_common for k, v in metrics_sum_diff.items()} if total_common > 0 else {}
+            win_rates = {k: (v / total_common) * 100 for k, v in metrics_wins.items()} if total_common > 0 else {}
+            
+            comparisons[method] = {
+                "vs_baseline": avg_diffs,
+                "win_rates": win_rates
+            }
         
         run_stats = {
-            "comparison": "scratchpad (A) vs baseline (B)",
-            "diff_meaning": "A - B",
+            "baseline_method": baseline_method,
             "total_samples": total_common,
-            "aggregate_diffs": avg_diffs,
-            "win_rates": win_rates
+            "method_aggregates": method_aggregates,
+            "comparisons": comparisons
         }
         
         # Save summary JSON
         save_json_results(run_stats, base_run_dir, "comparison_summary")
         
         print("\nGenerating comparison visualization...")
-        comp_path = base_run_dir / f"comparison_baseline_vs_scratchpad_{run_timestamp}.png"
+        comp_path = base_run_dir / f"comparison_all_methods_{run_timestamp}.png"
         
-        # Use scratchpad config as it contains the reasoning params
-        viz_config = all_run_data["scratchpad"]["meta"]["config"]
+        # Use first method's config (or scratchpad if available)
+        viz_config = all_run_data.get("scratchpad", list(all_run_data.values())[0])["meta"]["config"]
         viz_config["timestamp"] = run_timestamp
         
         create_comparison_visualization(
-            all_run_data["baseline"], 
-            all_run_data["scratchpad"], 
+            all_run_data,
             images_map, 
             comp_path,
             run_stats=run_stats,

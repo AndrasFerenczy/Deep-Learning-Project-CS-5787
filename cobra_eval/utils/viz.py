@@ -76,14 +76,18 @@ def create_visualization_from_results(
         # Trace
         if trace:
             text_parts.append(("Reasoning Trace:", "bold", 13))
-            # Truncate
-            trace_short = trace[:400] + "..." if len(trace) > 400 else trace
-            text_parts.append((f"  {trace_short}", "italic", 10))
+            # Show full trace with proper wrapping
+            trace_lines = wrap(trace, width=100)
+            for line in trace_lines:
+                text_parts.append((f"  {line}", "italic", 10))
             text_parts.append(("", "normal", 0))
             
         # Caption
         text_parts.append(("Generated Caption:", "bold", 13))
-        text_parts.append((f"  {gen_cap}", "normal", 11))
+        # Show full caption with proper wrapping
+        caption_lines = wrap(gen_cap, width=100)
+        for line in caption_lines:
+            text_parts.append((f"  {line}", "normal", 11))
         
         # Rendering text
         y_pos = 0.98
@@ -98,15 +102,21 @@ def create_visualization_from_results(
             style_attr = 'italic' if style == "italic" else 'normal'
             line_height = line_height_base * (fontsize / 11)
             
-            ax_text.text(0.02, y_pos, text, transform=ax_text.transAxes,
-                        fontsize=fontsize, weight=weight, style=style_attr,
-                        verticalalignment='top', horizontalalignment='left',
-                        family='sans-serif', wrap=True,
-                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7) if style == "bold" else None)
+            # Wrap text properly for better display
+            wrapped_lines = wrap(text, width=100)
+            num_lines = len(wrapped_lines)
             
-            # Rough estimation of lines
-            num_lines = max(1, len(text) // 90 + 1)
-            y_pos -= line_height * num_lines + 0.01
+            # Render each line separately for better control
+            for line in wrapped_lines:
+                ax_text.text(0.02, y_pos, line, transform=ax_text.transAxes,
+                            fontsize=fontsize, weight=weight, style=style_attr,
+                            verticalalignment='top', horizontalalignment='left',
+                            family='sans-serif',
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7) if style == "bold" and line == wrapped_lines[0] else None)
+                y_pos -= line_height + 0.01
+            
+            # Add small spacing after each text block
+            y_pos -= 0.01
 
     plt.tight_layout(pad=2.0)
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')
@@ -114,8 +124,7 @@ def create_visualization_from_results(
     plt.close()
 
 def create_comparison_visualization(
-    baseline_data: Dict[str, Any],
-    scratchpad_data: Dict[str, Any],
+    all_methods_data: Dict[str, Dict[str, Any]],
     images_map: Dict[int, Image.Image],
     output_path: Path,
     run_stats: Dict[str, Any] = None,
@@ -123,55 +132,80 @@ def create_comparison_visualization(
     max_images: int = 10
 ):
     """
-    Create side-by-side comparison visualization.
+    Create side-by-side comparison visualization for all methods.
+    
+    Args:
+        all_methods_data: Dictionary mapping method names to their result data
+        images_map: Map of image_id to PIL Image
+        output_path: Path to save the visualization
+        run_stats: Optional statistics dictionary
+        config: Optional configuration dictionary
+        max_images: Maximum number of images to display
     """
     from matplotlib.gridspec import GridSpec
 
-    # Map results by image_id
-    base_map = {r["image_id"]: r for r in baseline_data["results"]}
-    scratch_map = {r["image_id"]: r for r in scratchpad_data["results"]}
+    # Method order and display names
+    method_order = ["baseline", "scratchpad", "llava_cot"]
+    method_display_names = {
+        "baseline": "Baseline",
+        "scratchpad": "Scratchpad",
+        "llava_cot": "LLaVA-CoT"
+    }
     
-    # Find common images that exist in images_map
-    common_ids = sorted([
-        iid for iid in base_map.keys() 
-        if iid in scratch_map and iid in images_map
-    ])[:max_images]
+    # Filter to only methods that exist
+    available_methods = [m for m in method_order if m in all_methods_data]
+    
+    if len(available_methods) < 2:
+        print(f"Need at least 2 methods for comparison, found {len(available_methods)}")
+        return
+    
+    # Map results by image_id for each method
+    method_maps = {}
+    for method in available_methods:
+        method_maps[method] = {r["image_id"]: r for r in all_methods_data[method]["results"]}
+    
+    # Find common images across all methods that exist in images_map
+    common_ids = set(method_maps[available_methods[0]].keys())
+    for method in available_methods[1:]:
+        common_ids &= set(method_maps[method].keys())
+    common_ids = common_ids & set(images_map.keys())
+    common_ids = sorted(list(common_ids))[:max_images]
     
     if not common_ids:
         print("No common images found for comparison")
         return
 
     n_images = len(common_ids)
+    n_methods = len(available_methods)
     
-    # Calculate figure height: rows for images
-    # Removed overview header as requested
+    # Calculate figure size: 1 column for image + refs, then 1 column per method
     row_height = 8
     total_height = row_height * n_images
+    # Adjust width based on number of methods (image + methods)
+    total_width = 8 + (n_methods * 8)
     
-    fig = plt.figure(figsize=(30, total_height))
+    fig = plt.figure(figsize=(total_width, total_height))
     
-    # Use GridSpec to manage layout
-    n_rows = n_images
+    # Use GridSpec: rows for images, columns for image + methods
+    n_cols = 1 + n_methods  # 1 for image, rest for methods
+    gs = GridSpec(n_images, n_cols, figure=fig, width_ratios=[1.2] + [1.0] * n_methods)
     
-    # Equal height ratios
-    gs = GridSpec(n_rows, 3, figure=fig)
+    # Use baseline as reference for comparison
+    baseline_map = method_maps.get("baseline")
     
     for idx, img_id in enumerate(common_ids):
-        base_res = base_map[img_id]
-        scratch_res = scratch_map[img_id]
+        row = idx
         image = images_map[img_id]
         
-        # Determine grid row
-        row = idx
-        
-        # Col 1: Image & Refs
+        # Col 0: Image & Refs
         ax_img = fig.add_subplot(gs[row, 0])
         ax_img.imshow(image)
         ax_img.axis('off')
         ax_img.set_title(f'Image {img_id}', fontsize=16, fontweight='bold', pad=15)
         
-        # Add refs below image
-        ref_text = "References:\n" + "\n".join([f"- {r}" for r in base_res["reference_captions"][:3]])
+        # Add refs below image (use first available method's refs)
+        first_res = method_maps[available_methods[0]][img_id]
+        ref_text = "References:\n" + "\n".join([f"- {r}" for r in first_res["reference_captions"][:3]])
         ax_img.text(0.05, -0.05, ref_text, transform=ax_img.transAxes, fontsize=11, verticalalignment='top', wrap=True)
         
         # Helper to render text block
@@ -187,10 +221,11 @@ def create_comparison_visualization(
             ax.text(0, y, "Caption:", fontweight='bold', fontsize=12)
             y -= 0.04
             
-            cap_lines = wrap(res["generated_caption"], width=50)
+            # Show full caption with proper wrapping
+            cap_lines = wrap(res["generated_caption"], width=70)
             for line in cap_lines:
-                ax.text(0.02, y, line, fontsize=11)
-                y -= 0.03
+                ax.text(0.02, y, line, fontsize=10)
+                y -= 0.028
             y -= 0.02
             
             # Metrics
@@ -207,7 +242,7 @@ def create_comparison_visualization(
                     text = f"{k}: {v:.3f}"
                     color = "black"
                     
-                    # Comparison diff
+                    # Comparison diff with baseline
                     if compare_with and "metrics" in compare_with and k in compare_with["metrics"]:
                         base_v = compare_with["metrics"][k]
                         diff = v - base_v
@@ -219,8 +254,8 @@ def create_comparison_visualization(
                             color = "green" if diff > 0 else "red"
                             text += diff_text
                     
-                    ax.text(0.02, y, text, fontsize=11, color=color, fontweight='bold' if color != 'black' else 'normal')
-                    y -= 0.03
+                    ax.text(0.02, y, text, fontsize=10, color=color, fontweight='bold' if color != 'black' else 'normal')
+                    y -= 0.028
             
             y -= 0.02
             
@@ -229,19 +264,21 @@ def create_comparison_visualization(
             if trace:
                 ax.text(0, y, "Reasoning Trace:", fontweight='bold', fontsize=12)
                 y -= 0.04
-                trace_short = trace[:500] + "..." if len(trace) > 500 else trace
-                trace_lines = wrap(trace_short, width=60)
-                for line in trace_lines:
-                    ax.text(0.02, y, line, fontsize=9, style='italic')
-                    y -= 0.025
+                # Show full trace with proper wrapping (limit display length for readability)
+                trace_display = trace[:500] + "..." if len(trace) > 500 else trace
+                trace_lines = wrap(trace_display, width=70)
+                for line in trace_lines[:10]:  # Limit to 10 lines for display
+                    ax.text(0.02, y, line, fontsize=8, style='italic')
+                    y -= 0.022
+                if len(trace_lines) > 10:
+                    ax.text(0.02, y, f"... ({len(trace_lines) - 10} more lines)", fontsize=8, style='italic', color='gray')
 
-        # Col 2: Baseline
-        ax_base = fig.add_subplot(gs[row, 1])
-        render_text_block(ax_base, "Baseline", base_res)
-        
-        # Col 3: Scratchpad
-        ax_scratch = fig.add_subplot(gs[row, 2])
-        render_text_block(ax_scratch, "Scratchpad", scratch_res, compare_with=base_res)
+        # Render each method
+        for col_idx, method in enumerate(available_methods):
+            method_res = method_maps[method][img_id]
+            ax_method = fig.add_subplot(gs[row, col_idx + 1])
+            display_name = method_display_names.get(method, method.title())
+            render_text_block(ax_method, display_name, method_res, compare_with=baseline_map[img_id] if baseline_map else None)
 
     plt.tight_layout(pad=3.0)
     plt.savefig(output_path, dpi=150, bbox_inches='tight', facecolor='white')

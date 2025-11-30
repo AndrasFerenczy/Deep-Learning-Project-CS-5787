@@ -11,9 +11,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         type=str,
-        choices=["baseline", "scratchpad", "both"],
+        choices=["baseline", "scratchpad", "scratchpad_compare", "llava_cot", "both", "all"],
         default="baseline",
-        help="Inference method to use"
+        help="Inference method to use (both=baseline+scratchpad, all=baseline+scratchpad+llava_cot, scratchpad_compare=compare multiple pass counts)"
     )
     
     # Dataset settings
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         "--scratchpad_passes",
         type=int,
         default=1,
-        help="Number of reasoning passes for scratchpad method"
+        help="Number of reasoning passes for scratchpad and llava_cot methods. For scratchpad_compare, this is the maximum number of passes to compare (default: compares 1-4 passes)"
     )
     
     # Model settings
@@ -84,6 +84,34 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Path to existing results JSON file to load and resume/skip generation from"
+    )
+
+    parser.add_argument(
+        "--no_baseline_cache",
+        action="store_true",
+        help="Do not use the default cached baseline output (cobra_eval/data/baseline_caption_COCO_output.json)"
+    )
+    
+    # Checkpointing
+    parser.add_argument(
+        "--checkpoint_interval",
+        type=int,
+        default=10,
+        help="Save checkpoint every N samples (0 to disable checkpointing, default: 10)"
+    )
+    
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        action="store_true",
+        help="Automatically resume from latest checkpoint if available"
+    )
+    
+    # Parallelization
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of parallel workers for inference (default: 1, sequential processing)"
     )
     
     return parser.parse_args()
