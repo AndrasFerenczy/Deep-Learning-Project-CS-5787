@@ -126,3 +126,7 @@ wandb==0.22.3
 wcwidth==0.2.14
 xxhash==3.6.0
 yarl==1.22.0
+# External model API clients (optional, for testing against GPT-5, Gemini, Claude, Llama)
+openai>=1.0.0
+anthropic>=0.18.0
+google-generativeai>=0.3.0
