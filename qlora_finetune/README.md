@@ -1,10 +1,10 @@
-# QLoRA Fine-tuning for Cobra VLM
+# LoRA Fine-tuning for Cobra VLM
 
-This directory contains a complete implementation for fine-tuning Cobra VLM using QLoRA (4-bit quantization + LoRA) on the LLaVA-CoT-100k dataset.
+This directory contains a complete implementation for **parameter-efficient LoRA fine-tuning** of Cobra VLM on the LLaVA-CoT-100k dataset.
 
 ## Overview
 
-QLoRA enables efficient fine-tuning by:
+LoRA enables efficient fine-tuning by:
 - **LoRA (Low-Rank Adaptation)**: Only trains a small number of additional parameters (~0.1-1% of original model)
 - **Parameter Efficiency**: Typically uses <1% of trainable parameters compared to full fine-tuning
 
@@ -18,17 +18,26 @@ This implementation is designed to work with Cobra VLM's Mamba-based architectur
 
 ### 1. Setup Virtual Environment
 
-This package uses its own isolated virtual environment. Create and activate it:
+This package uses its own isolated virtual environment in `./env`.
+
+**Recommended (scripted) setup:**
 
 ```bash
-# Create and setup virtual environment
+# From the project root
 cd qlora_finetune
-bash setup_venv.sh
+bash install_requirements.sh
 
-# Activate the environment
-source venv/bin/activate  # On Linux/Mac
-# or
-venv\Scripts\activate  # On Windows
+# Activate the environment (Linux/Mac)
+source env/bin/activate
+```
+
+**Manual setup (alternative):**
+
+```bash
+cd qlora_finetune
+python -m venv env
+source env/bin/activate
+pip install -r requirements.txt
 ```
 
 ### 2. Verify Installation
@@ -43,7 +52,7 @@ python -c "import peft, bitsandbytes, trl; print('All packages installed success
 
 ```bash
 # Activate virtual environment first
-source venv/bin/activate
+source env/bin/activate
 
 # Train with default settings (uses 100% of dataset)
 python train_qlora.py \
@@ -119,27 +128,26 @@ python train_qlora.py --config config.json
 
 ### LoRA Configuration
 
-- `lora_r` (int): LoRA rank. Default: 16
-  - Higher values = more parameters, better capacity but slower training
-- `lora_alpha` (int): LoRA alpha. Default: 32
-  - Scaling factor for LoRA weights (typically 2x rank)
+- `lora_r` (int): LoRA rank. Default: 8
+  - Higher values = more parameters, better capacity but slower training (and more VRAM)
+- `lora_alpha` (int): LoRA alpha. Default: 16
+  - Scaling factor for LoRA weights (often 2x rank)
 - `lora_dropout` (float): LoRA dropout. Default: 0.05
 - `lora_target_modules` (list, optional): Target modules for LoRA
   - If None, auto-detects Mamba SSM layers
   - Common targets: `["in_proj", "out_proj", "x_proj", "dt_proj"]`
 
-### Quantization Configuration
+### Quantization / Precision
 
-- `load_in_4bit` (bool): Use 4-bit quantization. Default: True
-- `bnb_4bit_compute_dtype` (str): Compute dtype. Default: "float16"
-  - Options: "float16" or "bfloat16"
-- `bnb_4bit_quant_type` (str): Quantization type. Default: "nf4"
-- `bnb_4bit_use_double_quant` (bool): Use double quantization. Default: True
+This implementation currently **runs the Cobra/Mamba backbone in full precision (FP16)** and does **not**
+apply 4-bit quantization. LoRA gives parameter-efficiency, but VRAM usage is closer to full fine-tuning
+of the base model. If you want true QLoRA (4-bit) behavior, you would need to extend `model_loader.py`
+to load the backbone with a 4-bit `bitsandbytes` configuration.
 
 ### Training Configuration
 
-- `per_device_train_batch_size` (int): Batch size per device. Default: 4
-- `gradient_accumulation_steps` (int): Gradient accumulation. Default: 4
+- `per_device_train_batch_size` (int): Batch size per device. Default: 1
+- `gradient_accumulation_steps` (int): Gradient accumulation. Default: 1
   - Effective batch size = `per_device_train_batch_size * gradient_accumulation_steps * num_gpus`
 - `learning_rate` (float): Learning rate. Default: 2e-5
 - `num_train_epochs` (int): Number of epochs. Default: 2
@@ -147,14 +155,25 @@ python train_qlora.py --config config.json
 - `warmup_ratio` (float): Warmup ratio. Default: 0.03
 - `weight_decay` (float): Weight decay. Default: 0.01
 - `max_grad_norm` (float): Maximum gradient norm. Default: 1.0
+- `fp16` (bool): Use FP16 training. Default: True
+- `bf16` (bool): Use BF16 training (if supported). Default: False
+- `logging_steps` (int): How often to log training metrics. Default: 10
+- `save_steps` (int): How often to save checkpoints. Default: 500
+- `eval_steps` (int, optional): How often to run evaluation (if enabled)
+- `save_total_limit` (int): Maximum number of checkpoints to keep. Default: 3
 
 ### Other Settings
 
 - `freeze_vision_encoder` (bool): Freeze vision encoder. Default: True
 - `seed` (int): Random seed. Default: 42
 - `output_dir` (Path): Output directory for checkpoints
-- `wandb_project` (str): Weights & Biases project name
-- `hf_token` (str): HuggingFace token or path to `.hf_token` file
+- `dataloader_num_workers` (int): Number of workers for data loading. Default: 4
+- `remove_unused_columns` (bool): Whether to drop unused dataset columns. Default: False
+- `report_to` (list of str): Tracking backends (e.g., `["wandb"]` or `["none"]`). Default: `["wandb"]`
+- `wandb_project` (str): Weights & Biases project name. Default: `"cobra-qlora"`
+- `wandb_entity` (str, optional): Weights & Biases entity (organization/user)
+- `hf_token` (str): HuggingFace token or path to `.hf_token` file.
+  - Default in `QLoRAConfig` is `None`; when running `train_qlora.py` via CLI, the default CLI argument is `.hf_token`
 
 ## Usage Examples
 
@@ -287,7 +306,6 @@ Training progress is logged to:
 - Reduce `per_device_train_batch_size`
 - Increase `gradient_accumulation_steps` to maintain effective batch size
 - Reduce `lora_r` (e.g., from 16 to 8)
-- Ensure `load_in_4bit=True`
 
 ### Slow Training
 
@@ -321,25 +339,12 @@ qlora_finetune/
 ├── inference.py             # Inference utilities
 ├── utils.py                 # Helper functions
 ├── requirements.txt         # Python dependencies
-├── setup_venv.sh            # Virtual environment setup script
-├── .gitignore              # Git ignore rules
-└── README.md               # This file
+├── install_requirements.sh  # Virtual environment and dependency setup script
+├── .gitignore               # Git ignore rules
+└── README.md                # This file
 ```
 
-## Citation
 
-If you use this QLoRA fine-tuning implementation, please cite:
-
-```bibtex
-@article{zhao2024cobra,
-    title={Cobra: Extending Mamba to Multi-Modal Large Language Model for Efficient Inference},
-    author={Han Zhao and Min Zhang and Wei Zhao and Pengxiang Ding and Siteng Huang and Donglin Wang},
-    year={2024},
-    eprint={2403.14520},
-    archivePrefix={arXiv},
-    primaryClass={cs.CV}
-}
-```
 
 ## License
 
