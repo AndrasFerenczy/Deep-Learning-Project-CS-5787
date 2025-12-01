@@ -11,9 +11,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         type=str,
-        choices=["baseline", "scratchpad", "scratchpad_compare", "llava_cot", "both", "all"],
+        choices=["baseline", "scratchpad", "scratchpad_compare", "llava_cot", "gpt5", "gemini", "claude", "llama", "both", "all", "external"],
         default="baseline",
-        help="Inference method to use (both=baseline+scratchpad, all=baseline+scratchpad+llava_cot, scratchpad_compare=compare multiple pass counts)"
+        help="Inference method to use (both=baseline+scratchpad, all=baseline+scratchpad+llava_cot, scratchpad_compare=compare multiple pass counts, external=gpt5+gemini+claude+llama)"
     )
     
     # Dataset settings
@@ -49,6 +49,70 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=".hf_token",
         help="Path to HuggingFace token file"
+    )
+    
+    # External model API keys (optional, can also use environment variables)
+    parser.add_argument(
+        "--openai_api_key",
+        type=str,
+        default=None,
+        help="OpenAI API key (or set OPENAI_API_KEY env var)"
+    )
+    parser.add_argument(
+        "--openai_api_key_file",
+        type=str,
+        default=None,
+        help="Path to file containing OpenAI API key"
+    )
+    parser.add_argument(
+        "--gemini_api_key",
+        type=str,
+        default=None,
+        help="Google Gemini API key (or set GEMINI_API_KEY env var)"
+    )
+    parser.add_argument(
+        "--gemini_api_key_file",
+        type=str,
+        default=None,
+        help="Path to file containing Gemini API key"
+    )
+    parser.add_argument(
+        "--anthropic_api_key",
+        type=str,
+        default=None,
+        help="Anthropic API key (or set ANTHROPIC_API_KEY env var)"
+    )
+    parser.add_argument(
+        "--anthropic_api_key_file",
+        type=str,
+        default=None,
+        help="Path to file containing Anthropic API key"
+    )
+    
+    # External model-specific settings
+    parser.add_argument(
+        "--gpt5_model",
+        type=str,
+        default="gpt-4o",
+        help="OpenAI model to use (default: gpt-4o, can use gpt-4o-mini or gpt-5 when available)"
+    )
+    parser.add_argument(
+        "--gemini_model",
+        type=str,
+        default="gemini-1.5-pro",
+        help="Gemini model to use (default: gemini-1.5-pro, can use gemini-1.5-flash)"
+    )
+    parser.add_argument(
+        "--claude_model",
+        type=str,
+        default="claude-3-5-sonnet-20241022",
+        help="Claude model to use (default: claude-3-5-sonnet-20241022)"
+    )
+    parser.add_argument(
+        "--llama_model_id",
+        type=str,
+        default="meta-llama/Llama-3.2-11B-Vision-Instruct",
+        help="Llama model ID from HuggingFace (default: meta-llama/Llama-3.2-11B-Vision-Instruct)"
     )
     
     # Generation parameters
@@ -95,9 +159,9 @@ def parse_args() -> argparse.Namespace:
     # Checkpointing
     parser.add_argument(
         "--checkpoint_interval",
-        type=int,
+        type=float,
         default=10,
-        help="Save checkpoint every N samples (0 to disable checkpointing, default: 10)"
+        help="Save checkpoint every N samples (or fraction if < 1.0) (0 to disable checkpointing, default: 10)"
     )
     
     parser.add_argument(

@@ -70,7 +70,8 @@ def save_checkpoint(
     data: Dict[str, Any], 
     output_dir: Union[str, Path], 
     filename_prefix: str = "checkpoint",
-    sample_count: int = 0
+    sample_count: int = 0,
+    overwrite: bool = False
 ) -> Path:
     """
     Save checkpoint data to a JSON file.
@@ -80,6 +81,7 @@ def save_checkpoint(
         output_dir: Directory to save to
         filename_prefix: Prefix for the filename
         sample_count: Number of samples processed (for filename)
+        overwrite: If True, overwrites a single 'latest' file instead of creating new timestamped files
         
     Returns:
         Path to the saved checkpoint file
@@ -87,8 +89,12 @@ def save_checkpoint(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"{filename_prefix}_{sample_count}_{timestamp}.json"
+    if overwrite:
+        filename = f"{filename_prefix}_latest.json"
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{filename_prefix}_{sample_count}_{timestamp}.json"
+        
     output_path = output_dir / filename
     
     with open(output_path, 'w', encoding='utf-8') as f:

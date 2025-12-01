@@ -16,7 +16,7 @@ from .utils.io import save_json_results, load_json_results, find_latest_result_f
 from .utils.viz import create_visualization_from_results, create_comparison_visualization
 
 # Import all plugins to ensure registration
-from .generators import baseline, scratchpad, scratchpad_compare, external, llava_cot
+from .generators import baseline, scratchpad, scratchpad_compare, external, llava_cot, external_models
 from .metrics import bleu, bert_score
 
 def main():
@@ -39,29 +39,37 @@ def main():
         
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
-    # 2. Load Model
-    print(f"Loading model: {args.model_id}")
-    try:
-        hf_token_path = Path(args.hf_token)
-        if hf_token_path.exists():
-            hf_token = hf_token_path.read_text().strip()
-        else:
-            hf_token = None
-            
-        vlm = load(args.model_id, hf_token=hf_token)
-        vlm.to(device, dtype=dtype)
-        print("Model loaded successfully!")
-    except Exception as e:
-        print(f"Error loading model: {e}")
-        return
-
     # Determine methods to run
     if args.method == "both":
         methods_to_run = ["baseline", "scratchpad"]
     elif args.method == "all":
         methods_to_run = ["baseline", "scratchpad", "llava_cot"]
+    elif args.method == "external":
+        methods_to_run = ["gpt5", "gemini", "claude", "llama"]
     else:
         methods_to_run = [args.method]
+
+    # 2. Load Model (only for non-external methods)
+    external_methods = ["gpt5", "gemini", "claude", "llama"]
+    vlm = None
+    
+    if not any(m in external_methods for m in methods_to_run):
+        print(f"Loading model: {args.model_id}")
+        try:
+            hf_token_path = Path(args.hf_token)
+            if hf_token_path.exists():
+                hf_token = hf_token_path.read_text().strip()
+            else:
+                hf_token = None
+                
+            vlm = load(args.model_id, hf_token=hf_token)
+            vlm.to(device, dtype=dtype)
+            print("Model loaded successfully!")
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            return
+    else:
+        print("Using external models - skipping local model loading")
 
     # Create a unique directory for this run
     run_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -92,6 +100,32 @@ def main():
             generator = generator_cls(vlm, scratchpad_passes=max_passes)
         elif current_method in ["scratchpad", "llava_cot"]:
             generator = generator_cls(vlm, scratchpad_passes=args.scratchpad_passes)
+        elif current_method == "gpt5":
+            generator = generator_cls(
+                api_key=args.openai_api_key,
+                model=args.gpt5_model,
+                api_key_file=args.openai_api_key_file
+            )
+        elif current_method == "gemini":
+            generator = generator_cls(
+                api_key=args.gemini_api_key,
+                model=args.gemini_model,
+                api_key_file=args.gemini_api_key_file
+            )
+        elif current_method == "claude":
+            generator = generator_cls(
+                api_key=args.anthropic_api_key,
+                model=args.claude_model,
+                api_key_file=args.anthropic_api_key_file
+            )
+        elif current_method == "llama":
+            hf_token_path = Path(args.hf_token)
+            hf_token = hf_token_path.read_text().strip() if hf_token_path.exists() else None
+            generator = generator_cls(
+                model_id=args.llama_model_id,
+                hf_token=hf_token,
+                device="cuda" if torch.cuda.is_available() else "cpu"
+            )
         else:
             generator = generator_cls(vlm)
             
@@ -270,7 +304,12 @@ def main():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Processed {i + 1}/{args.num_samples} samples...")
             
             # Save checkpoint periodically
-            if args.checkpoint_interval > 0 and (i + 1) % args.checkpoint_interval == 0:
+            effective_interval = args.checkpoint_interval
+            if 0 < effective_interval <= 1.0:
+                effective_interval = int(effective_interval * args.num_samples)
+            effective_interval = max(1, int(effective_interval))
+
+            if args.checkpoint_interval > 0 and (i + 1) % effective_interval == 0:
                 # Compute partial metrics for checkpoint
                 partial_references = {img_id: references_map[img_id] for img_id in references_map.keys()}
                 partial_predictions = {img_id: predictions_map[img_id] for img_id in predictions_map.keys() if img_id in partial_references}
@@ -296,7 +335,8 @@ def main():
                     checkpoint_data, 
                     result_dir, 
                     f"checkpoint_{current_method}",
-                    sample_count=i + 1
+                    sample_count=i + 1,
+                    overwrite=True
                 )
                 print(f"  → Checkpoint saved: {checkpoint_path.name} ({i + 1}/{args.num_samples} samples)")
             
