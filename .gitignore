@@ -152,4 +152,4 @@ runs/
 
 # Test scripts
 test*.py
-*.sh
+# *.sh
