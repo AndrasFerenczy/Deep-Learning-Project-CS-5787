@@ -49,7 +49,7 @@ def load_llava_cot_dataset(
             raise ValueError(f"Could not find train.jsonl in {dataset_path}")
     else:
         # Load from HuggingFace
-        dataset = load_dataset(dataset_name, split=split, trust_remote_code=True)
+        dataset = load_dataset(dataset_name, split=split)
     
     total_size = len(dataset)
     

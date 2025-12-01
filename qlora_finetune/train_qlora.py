@@ -153,6 +153,25 @@ def main(config: QLoRAConfig):
         print(f"Warning: Could not enable gradient checkpointing: {e}")
         print("Continuing without gradient checkpointing")
     
+    # Check if WandB is available before setting report_to
+    report_to = config.report_to
+    if "wandb" in report_to:
+        wandb_api_key = os.environ.get("WANDB_API_KEY")
+        wandb_logged_in = False
+        try:
+            from wandb.sdk.lib.apikey import api_key
+            if api_key(settings=None):
+                wandb_logged_in = True
+        except:
+            pass
+        
+        if not wandb_api_key and not wandb_logged_in:
+            print("Warning: WandB API key not found. Disabling WandB tracking.")
+            print("To enable WandB, set WANDB_API_KEY environment variable or run: wandb login")
+            report_to = [r for r in report_to if r != "wandb"]
+            if not report_to:
+                report_to = ["none"]
+    
     # Training arguments
     # Build kwargs dict, only including optional parameters if they're not None
     training_kwargs = {
@@ -174,7 +193,7 @@ def main(config: QLoRAConfig):
         "seed": config.seed,
         "dataloader_num_workers": config.dataloader_num_workers,
         "remove_unused_columns": config.remove_unused_columns,
-        "report_to": config.report_to,
+        "report_to": report_to,
         "run_name": f"qlora-{config.model_id}-{config.dataset_max_samples or config.dataset_proportion or 'all'}",
     }
     
@@ -187,7 +206,7 @@ def main(config: QLoRAConfig):
     training_args = TrainingArguments(**training_kwargs)
     
     # Initialize W&B if specified
-    if "wandb" in config.report_to:
+    if "wandb" in report_to:
         import wandb
         wandb.init(
             project=config.wandb_project,
@@ -225,7 +244,7 @@ def main(config: QLoRAConfig):
         tokenizer=tokenizer,
         dataset_text_field="text",  # Specify the text field in the dataset
         packing=False,  # Don't pack sequences (we handle formatting manually)
-        # max_seq_length=512,  # Reduced to avoid shape issues with quantized model
+        max_seq_length=512,  # Reduced sequence length to save memory
         data_collator=data_collator,  # Use custom collator
     )
     

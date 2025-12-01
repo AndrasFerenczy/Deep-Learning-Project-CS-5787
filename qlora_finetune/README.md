@@ -5,7 +5,6 @@ This directory contains a complete implementation for fine-tuning Cobra VLM usin
 ## Overview
 
 QLoRA enables efficient fine-tuning by:
-- **4-bit Quantization**: Reduces memory usage by quantizing model weights to 4 bits
 - **LoRA (Low-Rank Adaptation)**: Only trains a small number of additional parameters (~0.1-1% of original model)
 - **Parameter Efficiency**: Typically uses <1% of trainable parameters compared to full fine-tuning
 
