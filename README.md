@@ -13,7 +13,6 @@ reasoning methods: a recursive **"Scratchpad"** approach and a structured **LLaV
 - **[Link](https://drive.google.com/file/d/1xQBkar2tk6zjd_bBPcHLwhI-4BkhKhrO/view?usp=sharing)** to derived **research paper**
 - **[Link](https://drive.google.com/file/d/1dH5n63QjdySSsatKplZAlIwEDnZqNS3u/view?usp=sharing)** to **presentation slides**
 
-![img_2.png](images/img_2.png)
 ### Feedback from the author of Cobra 
 
 ![img.png](images/img.png)
