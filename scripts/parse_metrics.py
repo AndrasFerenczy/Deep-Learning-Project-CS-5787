@@ -105,5 +105,5 @@ def parse_caption_metrics(file_path, output_path):
     print(f"Successfully parsed {len(data['images'])} images to {output_path}")
 
 if __name__ == "__main__":
-    parse_caption_metrics("caption_metrics_output.txt", "caption_metrics_output.json")
+    parse_caption_metrics("../images/caption_metrics_output.txt", "caption_metrics_output.json")
 

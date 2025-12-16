@@ -1,4 +1,23 @@
-# [AAAI-25] Cobra: Extending Mamba to Multi-modal Large Language Model for Efficient Inference
+# Thinking Cobra: Extending Cobra VLM with reasoning
+
+## Summary
+
+In this work, we investigate whether **explicit reasoning strategies** can enhance the performance of Cobra, a compact
+Mamba-based VLM. 
+
+We employ and evaluate two inference-time
+reasoning methods: a recursive **"Scratchpad"** approach and a structured **LLaVA-CoT prompting strategy**. Further experiments were done with
+**LoRA fine-tuning** on reasoning datasets.
+
+### Research paper and slides
+- **[Link](https://drive.google.com/file/d/1xQBkar2tk6zjd_bBPcHLwhI-4BkhKhrO/view?usp=sharing)** to derived **research paper**
+- **[Link](https://drive.google.com/file/d/1dH5n63QjdySSsatKplZAlIwEDnZqNS3u/view?usp=sharing)** to **presentation slides**
+
+### Feedback from the author of Cobra 
+
+![img.png](images/img.png)
+
+## Base work: Cobra (Extending Mamba to Multi-modal Large Language Model for Efficient Inference)
 
 [![arXiv](https://img.shields.io/badge/arXiv-2403.14520-df2a2a.svg?style=for-the-badge)](https://arxiv.org/abs/2403.14520)
 [![Model](https://img.shields.io/badge/Model-Huggingface-FFD21E.svg?style=for-the-badge)](https://huggingface.co/han1997/cobra)

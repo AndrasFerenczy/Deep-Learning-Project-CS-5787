@@ -32,7 +32,7 @@ def prepare_inputs(images: List[Dict]):
     return refs, preds
 
 def main():
-    data_path = 'cobra_eval/data/baseline_caption_COCO_output.json'
+    data_path = '../cobra_eval/data/baseline_caption_COCO_output.json'
     print(f"Loading data from {data_path}...")
     images = load_data(data_path)
     total_images = len(images)
